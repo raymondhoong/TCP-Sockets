@@ -45,7 +45,7 @@ int main(int argc, char *argv[])
     
     // Set master socket to allow multiple connections
     int opt = 1;
-    if (setsockopt(master_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int) == -1))
+    if (setsockopt(master_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) == -1)
     {
         cerr << "ERROR: Function setsockopt() failed unexpectedly for master_sock." << endl;
         exit(EXIT_FAILURE);
