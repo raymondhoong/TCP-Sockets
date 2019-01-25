@@ -17,13 +17,22 @@ using namespace std;
 
 int main(int argc, char *argv[])
 {
-    // Parse through command-line arguments
-    int port_num = atoi(argv[1]);
-    if (port_num >= 0 && port_num <= 1023)
+    // Check proper number of command-line arguments
+    if (argc != 3)
     {
-        cerr << "ERROR: Port number input is incorrect. Numbers 0-1023 are restricted." << endl;
-        exit(1);
+        cerr << "ERROR: Invalid number of arguments - Usage: ./server <PORT> <FILE-DIR>" << endl;
+        exit(EXIT_FAILURE);
     }
+    
+    // Check for valid port number argument
+    int port_num = atoi(argv[1]);
+    if (port_num < 1024 || port_num > 65535)
+    {
+        cerr << "ERROR: Port argument must be a number between 1024 and 65535." << endl;
+        exit(EXIT_FAILURE);
+    }
+    
+    // Store the file directory argument
     string dir_name = argv[2];
     
     // Create socket point
