@@ -12,7 +12,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-
 using namespace std;
 
 #define TRUE 1
@@ -20,20 +19,118 @@ using namespace std;
 #define MAX_CLIENTS 30
 #define PACKET_SIZE 1024
 
-void sigQuit_handler(int signum)
-{
-    cout << "Program successfully terminated by SIGQUIT" << endl;
+int listen_sd = 0;
+int client_socket[MAX_CLIENTS] = {0};
+
+void close_and_check(int fd) {
+    if (close(fd) < 0) {
+        cout << "ERROR: close() call failed" << endl;
+        exit(EXIT_FAILURE);
+    }
+}
+
+void close_sockets() {
+    close_and_check(listen_sd);
+    cout << "Listening socket (" << listen_sd << ") closed" << endl;
+    
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_socket[i] != 0) {
+            close_and_check(client_socket[i]);
+            cout << "Client socket (" << client_socket[i] << ") closed" << endl;
+        }
+        else
+            break;
+    }
+}
+
+void quit_sigHandler(int signum) {
+    cout << "Server has successfully exited from a SIGQUIT signal" << endl;
+    close_sockets();
     exit(EXIT_SUCCESS);
 }
 
-void sigTerm_handler(int signum)
-{
-    cout << "Program successfully terminated by SIGTERM" << endl;
+void term_sigHandler(int signum) {
+    cout << "Server has successfully exited from a SIGTERM signal" << endl;
+    close_sockets();
     exit(EXIT_SUCCESS);
+}
+
+void set_nonblocking(int sock)
+{
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0) {
+        cerr << "ERROR: fcntl() call #1 failed" << endl;
+        close_sockets();
+        exit(EXIT_FAILURE);
+    }
+    
+    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+        cerr << "ERROR: fcntl() call #2 failed" << endl;
+        close_sockets();
+        exit(EXIT_FAILURE);
+    }
+}
+
+void setup_connection(int port) {
+    // Declare variables
+    int opt;
+    struct sockaddr_in address;
+    
+    // Create listening socket
+    listen_sd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_sd < 0) {
+        cerr << "ERROR: socket() call failed" << endl;
+        exit(EXIT_FAILURE);
+    }
+    
+    // Set master socket to allow multiple connections
+    opt = 1;
+    if (setsockopt(listen_sd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
+        cerr << "ERROR: setsockopt() call failed" << endl;
+        exit(EXIT_FAILURE);
+    }
+    
+    // Set socket to non-blocking
+    set_nonblocking(listen_sd);
+    
+    // Initialize socket struct
+    bzero((char*)&address, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(port);
+    
+    // Bind master socket to hostname and port number
+    if (bind(listen_sd,(struct sockaddr*)&address,sizeof(address)) < 0) {
+        cerr << "ERROR: bind() call failed" << endl;
+        exit(EXIT_FAILURE);
+    }
+    
+    // Listen for maximum of 5 incoming connections
+    if (listen(listen_sd, 5) < 0) {
+        cerr << "ERROR: listen() call failed" << endl;
+        exit(EXIT_FAILURE);
+    }
+    else
+        cout << "Server listening for connections..." << endl;
 }
 
 int main(int argc, char *argv[])
 {
+    // Declare variables
+    int port_num, new_sock, count, live_sockets;
+    int rc, bytes_read, i, sd, max_sd;
+    int socket_ID[MAX_CLIENTS] = {0};
+    
+    char buf[PACKET_SIZE + 1];
+    struct sockaddr_in client_addr;
+    struct timeval timeout;
+    
+    string dir_name, dir_path, full_path;
+    socklen_t client_size;
+    fd_set readfds;
+    ofstream cfile;
+    DIR* dir;
+    
     // Check proper number of command-line arguments
     if (argc != 3)
     {
@@ -42,7 +139,7 @@ int main(int argc, char *argv[])
     }
     
     // Check for valid port number argument
-    int port_num = atoi(argv[1]);
+    port_num = atoi(argv[1]);
     if (port_num < 1024 || port_num > 65535)
     {
         cerr << "ERROR: Port argument must be a number between 1024 and 65535." << endl;
@@ -50,92 +147,34 @@ int main(int argc, char *argv[])
     }
     
     // Check if directory exists or create it
-    string dir_name = argv[2];
-    DIR* dir = opendir(argv[2]);
-    if (dir) {/* Do nothing */}
-    else if (ENOENT == errno)  // Directory doesn't exist
-    {
-        const int dir_err = mkdir(argv[2], S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-        if (dir_err == -1)
-        {
-            cerr << "ERROR: Failed to create new directory " << argv[2] << "... exiting program" << endl;
+    dir_name = argv[2];
+    dir = opendir(argv[2]);
+    
+    if (dir) {}                  // Directory already exists
+    else if (ENOENT == errno) {  // Create new directory
+        if (mkdir(argv[2], S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) <  0) {
+            cerr << "ERROR: mkdir() call failed" << endl;
             exit(EXIT_FAILURE);
         }
     }
-    else // Failed from an invalid reason
-    {
-        cerr << "ERROR: Failed to check if the directory " << argv[2] << "exists... exiting program" << endl;
+    else {
+        cerr << "ERROR: opendir() call failed" << endl;
         exit(EXIT_FAILURE);
     }
     
     // Register SIGTERM and SIGQUIT with handlers
-    signal(SIGQUIT, sigQuit_handler);
-    signal(SIGTERM, sigTerm_handler);
+    signal(SIGQUIT, quit_sigHandler);
+    signal(SIGTERM, term_sigHandler);
     
-    // Create socket point
-    int listen_sd = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_sd == -1)
-    {
-        cerr << "ERROR: Failed to create a socket point for the server... exiting program" << endl;
-        exit(EXIT_FAILURE);
-    }
+    // Set up server connection
+    setup_connection(port_num);
     
-    // Set master socket to allow multiple connections
-    int opt = 1;
-    if (setsockopt(listen_sd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) == -1)
-    {
-        cerr << "ERROR: Failed to configure the socket... exiting program" << endl;
-        exit(EXIT_FAILURE);
-    }
-    
-    // Make socket non-blocking
-    int status = fcntl(listen_sd, F_SETFL, O_NONBLOCK);
-    if (status == -1)
-    {
-        cerr << "ERROR: Failed to set socket to non-blocking... exiting program" << endl;
-        exit(EXIT_FAILURE);
-    }
-    
-    // Initialize socket struct
-    struct sockaddr_in serv_addr;
-    bzero((char*)&serv_addr, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(port_num);
-    
-    // Bind master socket to hostname and port number
-    if (bind(listen_sd,(struct sockaddr*)&serv_addr,sizeof(serv_addr)) == -1)
-    {
-        cerr << "ERROR: Failed to bind the socket... exiting program" << endl;
-        exit(1);
-    }
-    
-    // Listen for maximum of 5 incoming connections
-    if (listen(listen_sd, 5) == -1)
-    {
-        cerr << "ERROR: Failed to listen for incoming connections... exiting program" << endl;
-        exit(1);
-    }
-    
-    struct sockaddr_in client_addr;
-    socklen_t client_size = sizeof(client_addr);
-    
-    int new_sock;
-    int client_socket[MAX_CLIENTS] = {0};
-    int socket_ID[MAX_CLIENTS] = {0};
-    int count = 1;
-    int live_sockets = 0;
-    int retval;
-    int bytes_read;
-    int i, sd, max_sd;
-    
-    char buf[PACKET_SIZE + 1];  // 1KiB
-    fd_set readfds;  // Set of socket descriptors
-    struct timeval timeout;
-    ofstream cfile;
+    // Intialize variables
+    count = 1;
+    live_sockets = 0;
+    client_size = sizeof(client_addr);
     
     // Initialize directory path string
-    string dir_path, full_path;
     dir_path += "./";
     dir_path += dir_name;
     dir_path += "/";
@@ -144,19 +183,20 @@ int main(int argc, char *argv[])
     timeout.tv_sec = 15;
     timeout.tv_usec = 0;
     
+    fd_set exceptfds;
+    
     // Loop waiting for incoming connections or incoming data from connected sockets
-    while(TRUE)
-    {
+    while(TRUE) {
         // Clear socket set
         FD_ZERO(&readfds);
+        FD_ZERO(&exceptfds);
         
         // Add master socket to set
         FD_SET(listen_sd, &readfds);
         max_sd = listen_sd;
         
         // Add child sockets to set
-        for (i = 0; i < MAX_CLIENTS; i++)
-        {
+        for (i = 0; i < MAX_CLIENTS; i++) {
             // Assign socket descriptor
             sd = client_socket[i];
             
@@ -170,45 +210,37 @@ int main(int argc, char *argv[])
         }
             
         // Call select() and wait for timeout to complete
-        retval = select(max_sd + 1, &readfds, NULL, NULL, &timeout);
-        if (retval < 0)
-        {
-            cerr << "ERROR: Function select() failed unexpectedly ... exiting program" << endl;
+        rc = select(max_sd + 1, &readfds, NULL, NULL, &timeout);
+        if (rc < 0) {
+            cerr << "ERROR: select() call failed" << endl;
             exit(EXIT_FAILURE);
         }
-        if (retval == 0 && live_sockets != 0)
-        {
-            cout << "Connection timed out" << endl;
-            exit(EXIT_FAILURE);
+        if (rc == 0 && live_sockets != 0) {
+            cout << "All connections timed out" << endl;
+            //exit(EXIT_FAILURE);
         }
             
         // Check for incoming connections on master socket
-        if (FD_ISSET(listen_sd, &readfds))
-        {
+        if (FD_ISSET(listen_sd, &readfds)) {
             // Accept new connection
             new_sock = accept(listen_sd, (struct sockaddr*)&client_addr, &client_size);
-            if (new_sock == -1)
-            {
-                cerr << "ERROR: Failed to accept new connection... exiting program" << endl;
+            if (new_sock < 0) {
+                cerr << "ERROR: accept() call failed" << endl;
                 exit(EXIT_FAILURE);
             }
-            else
+            else {
+                cout << "New client connection " << count << " accepted" << endl;
                 live_sockets++;
+                cout << "Current number of sockets: " << live_sockets << endl;
+            }
             
-            // Make socket non-blocking
-            /*status = fcntl(new_sock, F_SETFL, O_NONBLOCK);
-            if (status == -1)
-            {
-                cerr << "ERROR: Failed to set socket to non-blocking... exiting program" << endl;
-                exit(EXIT_FAILURE);
-            }*/
+            // Set client socket to non-blocking
+            set_nonblocking(new_sock);
 
             // Add new socket to array of sockets
-            for (i = 0; i < MAX_CLIENTS; i++)
-            {
+            for (i = 0; i < MAX_CLIENTS; i++) {
                 // Find next empty position
-                if (client_socket[i] == 0)
-                {
+                if (client_socket[i] == 0) {
                     client_socket[i] = new_sock;
                     socket_ID[i] = count;
                     count++;
@@ -218,15 +250,11 @@ int main(int argc, char *argv[])
         }
             
         // Check for I/O operations from other sockets
-        for (i = 0; i < MAX_CLIENTS; i++)
-        {
-            if (client_socket[i] != 0)
-            {
-                //cout << "Socket client #: " << i << endl;
+        for (i = 0; i < MAX_CLIENTS; i++) {
+            if (client_socket[i] != 0) {
                 sd = client_socket[i];
 
-                if (FD_ISSET(sd, &readfds));
-                {
+                if (FD_ISSET(sd, &readfds)) {
                     // Create full path name for file
                     full_path += dir_path;
                     full_path += to_string(socket_ID[i]);
@@ -234,39 +262,30 @@ int main(int argc, char *argv[])
                     
                     // Open file or create it
                     cfile.open(full_path, fstream::app);
-                    if (!cfile.is_open())
-                    {
-                        cerr << "ERROR: Failed to open file from client... exiting program" << endl;
+                    if (!cfile.is_open()) {
+                        cerr << "ERROR: ofstream.open() call failed" << endl;
                         exit(EXIT_FAILURE);
-                    }
-                    else
-                    {
-                        cout << "File " << full_path << " opened" << endl;
                     }
                     
                     // Read incoming message or close socket
                     bytes_read = read(sd, buf, PACKET_SIZE);
-                    
-                    if (bytes_read < 0)
-                    {
-                        cerr << "ERROR: Failed to read data from socket... exiting program" << endl;
+                    if (bytes_read < 0) {
+                        cerr << "ERROR: read() call failed" << endl;
                         exit(EXIT_FAILURE);
                     }
-                    else if (bytes_read == 0)
-                    {
-                        close(sd);
+                    else if (bytes_read == 0) {  // Client closed connection, finished transfer
+                        cout << "Client " << socket_ID[i] << " successfully finished, socket (" << client_socket[i] << ") closed" << endl;
+                        close_and_check(sd);
                         cfile.close();
                         cfile.clear();
-                        cout << "Client socket " << socket_ID[i] << " closed." << endl;
                         client_socket[i] = 0;
                         live_sockets--;
-                        cout << "FINISHED" << endl;
+                        cout << "Current number of sockets: " << live_sockets << endl;
                     }
-                    else
-                    {
+                    else {                       // Write client data to file
                         buf[bytes_read] = '\0';
+                        //cout << "Client " << socket_ID[i] << ": bytes read = " << bytes_read << endl;
                         cfile << buf;
-                        cout << "Client socket " << socket_ID[i] << " written for." << endl;
                         cfile.close();
                         cfile.clear();
                     }
