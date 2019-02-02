@@ -262,6 +262,7 @@ int main(int argc, char *argv[])
                         cfile.clear();
                         client_socket[i] = 0;
                         live_sockets--;
+                        cout << "Current number of sockets: " << live_sockets << endl;
                         continue;
                     }
                     

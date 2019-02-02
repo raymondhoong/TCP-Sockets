@@ -13,7 +13,7 @@ using namespace std;
 
 #define TRUE 1
 #define FALSE 0
-#define PACKET_SIZE 1024
+#define PACKET_SIZE 300
 
 int sockfd, filefd;
 struct timeval timeout;
