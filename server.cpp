@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 using namespace std;
 
@@ -24,7 +25,7 @@ int client_socket[MAX_CLIENTS] = {0};
 
 void close_and_check(int fd) {
     if (close(fd) < 0) {
-        cout << "ERROR: close() call failed" << endl;
+        cout << "ERROR: " << strerror(errno) << " - close() call failed" << endl;
         exit(EXIT_FAILURE);
     }
 }
@@ -59,13 +60,13 @@ void set_nonblocking(int sock)
 {
     int flags = fcntl(sock, F_GETFL, 0);
     if (flags < 0) {
-        cerr << "ERROR: fcntl() call #1 failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - fcntl() call #1 failed" << endl;
         close_sockets();
         exit(EXIT_FAILURE);
     }
     
     if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
-        cerr << "ERROR: fcntl() call #2 failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - fcntl() call #2 failed" << endl;
         close_sockets();
         exit(EXIT_FAILURE);
     }
@@ -79,14 +80,14 @@ void setup_connection(int port) {
     // Create listening socket
     listen_sd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_sd < 0) {
-        cerr << "ERROR: socket() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - socket() call failed" << endl;
         exit(EXIT_FAILURE);
     }
     
     // Set master socket to allow multiple connections
     opt = 1;
     if (setsockopt(listen_sd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
-        cerr << "ERROR: setsockopt() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - setsockopt() call failed" << endl;
         exit(EXIT_FAILURE);
     }
     
@@ -101,13 +102,13 @@ void setup_connection(int port) {
     
     // Bind master socket to hostname and port number
     if (bind(listen_sd,(struct sockaddr*)&address,sizeof(address)) < 0) {
-        cerr << "ERROR: bind() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - bind() call failed" << endl;
         exit(EXIT_FAILURE);
     }
     
     // Listen for maximum of 5 incoming connections
     if (listen(listen_sd, 5) < 0) {
-        cerr << "ERROR: listen() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - listen() call failed" << endl;
         exit(EXIT_FAILURE);
     }
     else
@@ -123,7 +124,7 @@ int main(int argc, char *argv[])
     
     char buf[PACKET_SIZE + 1];
     struct sockaddr_in client_addr;
-    struct timeval timeout;
+    time_t last_act[MAX_CLIENTS] = {0};
     
     string dir_name, dir_path, full_path;
     socklen_t client_size;
@@ -153,12 +154,12 @@ int main(int argc, char *argv[])
     if (dir) {}                  // Directory already exists
     else if (ENOENT == errno) {  // Create new directory
         if (mkdir(argv[2], S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) <  0) {
-            cerr << "ERROR: mkdir() call failed" << endl;
+            cerr << "ERROR: " << strerror(errno) << " - mkdir() call failed" << endl;
             exit(EXIT_FAILURE);
         }
     }
     else {
-        cerr << "ERROR: opendir() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - opendir() call failed" << endl;
         exit(EXIT_FAILURE);
     }
     
@@ -179,17 +180,10 @@ int main(int argc, char *argv[])
     dir_path += dir_name;
     dir_path += "/";
     
-    // Intialize timeval struct to 15 seconds
-    timeout.tv_sec = 15;
-    timeout.tv_usec = 0;
-    
-    fd_set exceptfds;
-    
     // Loop waiting for incoming connections or incoming data from connected sockets
     while(TRUE) {
         // Clear socket set
         FD_ZERO(&readfds);
-        FD_ZERO(&exceptfds);
         
         // Add master socket to set
         FD_SET(listen_sd, &readfds);
@@ -210,22 +204,18 @@ int main(int argc, char *argv[])
         }
             
         // Call select() and wait for timeout to complete
-        rc = select(max_sd + 1, &readfds, NULL, NULL, &timeout);
+        rc = select(max_sd + 1, &readfds, NULL, NULL, NULL);
         if (rc < 0) {
-            cerr << "ERROR: select() call failed" << endl;
+            cerr << "ERROR: " << strerror(errno) << " - select() call failed" << endl;
             exit(EXIT_FAILURE);
         }
-        if (rc == 0 && live_sockets != 0) {
-            cout << "All connections timed out" << endl;
-            //exit(EXIT_FAILURE);
-        }
-            
+        
         // Check for incoming connections on master socket
         if (FD_ISSET(listen_sd, &readfds)) {
             // Accept new connection
             new_sock = accept(listen_sd, (struct sockaddr*)&client_addr, &client_size);
             if (new_sock < 0) {
-                cerr << "ERROR: accept() call failed" << endl;
+                cerr << "ERROR: " << strerror(errno) << " - accept() call failed" << endl;
                 exit(EXIT_FAILURE);
             }
             else {
@@ -243,6 +233,7 @@ int main(int argc, char *argv[])
                 if (client_socket[i] == 0) {
                     client_socket[i] = new_sock;
                     socket_ID[i] = count;
+                    last_act[i] = time(NULL);
                     count++;
                     break;
                 }
@@ -260,21 +251,35 @@ int main(int argc, char *argv[])
                     full_path += to_string(socket_ID[i]);
                     full_path += ".file";
                     
+                    time_t elapsed_time;
+                    elapsed_time = difftime(time(NULL), last_act[i]);
+                    if (elapsed_time > 15) {
+                        cout << "Client connection " << socket_ID[i] << " timed out, socket (" << client_socket[i] << ") closed - " << elapsed_time << endl;
+                        cfile.open(full_path);
+                        cfile << "ERROR";
+                        close_and_check(sd);
+                        cfile.close();
+                        cfile.clear();
+                        client_socket[i] = 0;
+                        live_sockets--;
+                        continue;
+                    }
+                    
                     // Open file or create it
                     cfile.open(full_path, fstream::app);
                     if (!cfile.is_open()) {
-                        cerr << "ERROR: ofstream.open() call failed" << endl;
+                        cerr << "ERROR: " << strerror(errno) << " - ofstream.open() call failed" << endl;
                         exit(EXIT_FAILURE);
                     }
                     
                     // Read incoming message or close socket
-                    bytes_read = read(sd, buf, PACKET_SIZE);
+                    bytes_read = recv(sd, buf, PACKET_SIZE, MSG_DONTWAIT);
                     if (bytes_read < 0) {
-                        cerr << "ERROR: read() call failed" << endl;
+                        cerr << "ERROR: " << strerror(errno) << " - read() call failed" << endl;
                         exit(EXIT_FAILURE);
                     }
                     else if (bytes_read == 0) {  // Client closed connection, finished transfer
-                        cout << "Client " << socket_ID[i] << " successfully finished, socket (" << client_socket[i] << ") closed" << endl;
+                        cout << "Client " << socket_ID[i] << " completed, socket (" << client_socket[i] << ") closed" << endl;
                         close_and_check(sd);
                         cfile.close();
                         cfile.clear();
@@ -282,9 +287,10 @@ int main(int argc, char *argv[])
                         live_sockets--;
                         cout << "Current number of sockets: " << live_sockets << endl;
                     }
-                    else {                       // Write client data to file
+                    else {
+                        // Write data to file
+                        last_act[i] = time(NULL);
                         buf[bytes_read] = '\0';
-                        //cout << "Client " << socket_ID[i] << ": bytes read = " << bytes_read << endl;
                         cfile << buf;
                         cfile.close();
                         cfile.clear();

@@ -16,6 +16,7 @@ using namespace std;
 #define PACKET_SIZE 1024
 
 int sockfd, filefd;
+struct timeval timeout;
 
 void exit_processing(int success) {
     close(filefd);
@@ -30,20 +31,15 @@ void exit_processing(int success) {
 void connect_to_server(const char *host, int port) {
     // Declare variables
     int flags, rc, optval;
-    struct timeval timeout;
     struct hostent *server;
     struct sockaddr_in address;
     fd_set writefds;
     socklen_t optlen;
-
-    // Set timeout to 15 secs
-    timeout.tv_sec = 15;
-    timeout.tv_usec = 0;
     
     // Create socket for client
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
-        cerr << "ERROR: socket() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - socket() call failed" << endl;
         close(filefd);
         exit(EXIT_FAILURE);
     }
@@ -51,7 +47,7 @@ void connect_to_server(const char *host, int port) {
     // Check for valid hostname
     server = gethostbyname(host);
     if (server == NULL) {
-        cerr << "ERROR: gethostbyname() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " -  gethostbyname() call failed" << endl;
         exit_processing(FALSE);
     }
     
@@ -64,12 +60,12 @@ void connect_to_server(const char *host, int port) {
     // Set socket to non-blocking
     flags = fcntl(sockfd, F_GETFL, 0);
     if (flags < 0) {
-        cerr << "ERROR: fcntl() call #1 failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - fcntl() call failed" << endl;
         exit_processing(FALSE);
     }
     
     if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        cerr << "ERROR: fcntl() call #2 failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - fcntl() call failed" << endl;
         exit_processing(FALSE);
     }
     
@@ -84,21 +80,24 @@ void connect_to_server(const char *host, int port) {
                 
                 rc = select(sockfd + 1, NULL, &writefds, NULL, &timeout);
                 if (rc < 0 && errno != EINTR) {
-                    cout << "ERROR: select() call failed" << endl;
+                    cout << "ERROR: " << strerror(errno) << " - select() call failed" << endl;
                     exit_processing(FALSE);
                 }
                 else if (rc > 0) {
                     // Socket selected for write
                     optlen = sizeof(int);
                     if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, (void*)(&optval), &optlen) < 0) {
-                        cout << "ERROR: getsockopt() call failed" << endl;
+                        cout << "ERROR: " << strerror(errno) << " - getsockopt() call failed" << endl;
                         exit_processing(FALSE);
                     }
                     
-                    // Check returned value of optval
+                    // Check if connection was successful
                     if (optval) {
                         cout << "ERROR: Delayed connection attempt failed" << endl;
                         exit_processing(FALSE);
+                    }
+                    else {
+                        cout << "Connection to server established" << endl;
                     }
                     break;
                 }
@@ -109,26 +108,29 @@ void connect_to_server(const char *host, int port) {
             } while(TRUE);
         }
         else {
-            cout << "ERROR: connect() call failed" << endl;
+            cout << "ERROR: " << strerror(errno) << " - connect() call failed" << endl;
             exit_processing(FALSE);
         }
     }
     
     // Set socket back to blocking mode
-    if (fcntl(sockfd, F_GETFL, NULL) < 0) {
-        cerr << "ERROR: fcntl() call #3 failed" << endl;
+    /*if (fcntl(sockfd, F_GETFL, NULL) < 0) {
+        cerr << "ERROR: " << strerror(errno) << " - fcntl() call #3 failed" << endl;
         exit_processing(FALSE);
     }
     
     if (fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
-        cerr << "ERROR: fcntl() call #4 failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - fcntl() call #4 failed" << endl;
         exit_processing(FALSE);
-    }
-    
-    cout << "Connection to server established" << endl;
+    }*/
 }
 
 int main(int argc, char *argv[]) {
+    // Declare variables
+    int bytes_read, bytes_sent;
+    char *sub;
+    char buffer[PACKET_SIZE + 1];
+    
     // Check proper number of command-line arguments
     if (argc != 4) {
         cerr << "ERROR: Invalid number of arguments - Usage: ./client <HOSTNAME-OR-IP> <PORT> <FILENAME>" << endl;
@@ -145,20 +147,21 @@ int main(int argc, char *argv[]) {
     // Open specified file
     filefd = open(argv[3], O_RDONLY);
     if (filefd < 0) {
-        cerr << "ERROR: open() call failed" << endl;
+        cerr << "ERROR: " << strerror(errno) << " - open() call failed" << endl;
         close(sockfd);
         exit(EXIT_FAILURE);
     }
+    
+    // Set timeout to 15 secs
+    timeout.tv_sec = 15;
+    timeout.tv_usec = 0;
     
     // Attempt TCP connection to server
     connect_to_server(argv[1], port_num);
         
     // Transfer file over socket connection
-    char buffer[PACKET_SIZE + 1];
-    int bytes_read, bytes_written;
-    char *sub;
+    cout << "Attemping to transfer file..." << endl;
     
-    cout << "Transferring file..." << endl;
     while (TRUE) {
         // Read data into buffer
         bytes_read = read(filefd, buffer, sizeof(buffer));
@@ -166,23 +169,23 @@ int main(int argc, char *argv[]) {
         if (bytes_read == 0)
             break;
         if (bytes_read < 0) {
-            cerr << "ERROR: read() call failed" << endl;
+            cerr << "ERROR: " << strerror(errno) << " - read() call failed" << endl;
             exit_processing(FALSE);
         }
         
         // Write data to socket
         sub = buffer;
         while (bytes_read > 0) {
-            bytes_written = write(sockfd, sub, bytes_read);
-            if (bytes_written <= 0) {
-                cerr << "ERROR: write() call failed" << endl;
+            bytes_sent = send(sockfd, sub, bytes_read, MSG_NOSIGNAL);
+            if (bytes_sent < 0 && errno != EAGAIN) {
+                cerr << "ERROR: " << strerror(errno) << " - write() call failed" << endl;
                 exit_processing(FALSE);
             }
-            bytes_read -= bytes_written;
-            sub += bytes_written;
+            bytes_read -= bytes_sent;
+            sub += bytes_sent;
         }
     }
     
-    cout << "File \"" << argv[3] << "\" has been succesfully transfered to " << argv[1] << endl;
+    cout << "File succesfully transfered" << endl;
     exit_processing(TRUE);
 }
