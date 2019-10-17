@@ -1,4 +1,3 @@
-# CS118 Project 1
 ## TODO
 
 Raymond Hoong
