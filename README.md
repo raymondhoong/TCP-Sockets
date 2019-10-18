@@ -9,12 +9,4 @@ For my server application, I decided to implement the design of handling multipl
 
 The problem I ran into was trying to find a way to implement the timeout feature for the server application. I first attempted to use select() and its timeout option to do so, but realized that it was not possible, or at least easily done. This is because select() will only return 0 to indicate if all the descriptors in its set has timed out. It doesn't indicate whether a particular connection timed out or not. Thus, I used a more blunt approach and just recorded the times that each client socket had an I/O operation. If the times between each operation was greater than 15 seconds, I treated it as a timeout error. 
 
-I used many online tutorials on how to complete this project.  The links are pasted below for your reference. I've also referenced some code that I've written for projects done in CS111.
-
-http://www.linuxhowtos.org/data/6/client.c
-http://developerweb.net/viewtopic.php?id=3196
-https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.hala001/orgblockasyn.htm
-http://pubs.opengroup.org/onlinepubs/7908799/xsh/time.h.html
-http://man7.org/linux/man-pages/man3/gethostbyname.3.html
-https://stackoverflow.com/questions/14378957/detecting-a-timed-out-socket-from-a-set-of-sockets
-http://pubs.opengroup.org/onlinepubs/7908799/xsh/difftime.html
+This was a project submitted for a class assignment.
